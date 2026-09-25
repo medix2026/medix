@@ -6256,7 +6256,7 @@ function renderMaintenanceHistory() {
                 if (containerMasterAction) {
                     const buttons = [];
                     if (masterExport) buttons.push(`<button onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
-                    if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import Excel<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
+                    if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import DATABASE.xlsx<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
                     if (masterTambah) buttons.push(`<button onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
                     if (masterRead && canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button onclick="cetakLabelBarcodeMassalPdf()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Khusus Admin"><i class="fa-solid fa-qrcode mr-1.5"></i> Download Semua Barcode</button>`);
                     containerMasterAction.innerHTML = buttons.join('');
@@ -9044,32 +9044,53 @@ function renderMaintenanceHistory() {
                     .trim()
                     .toLowerCase()
                     .replace(/[\s_\-\/]+/g, ' ');
-                const findSheetName = () => {
-                    const preferred = sheetNames.find(n => norm(n) === 'big data');
-                    if (preferred) return preferred;
-                    const fallback = sheetNames.find(n => /big\s*data/i.test(String(n)));
-                    if (fallback) return fallback;
-                    return '';
-                };
-                const sheetName = findSheetName();
-                if (!sheetName) {
-                    throw new Error(`Sheet "BIG DATA" tidak ditemukan. Sheet tersedia: ${sheetNames.join(', ')}`);
-                }
+                // Pilih sheet secara otomatis:
+                // 1) BIG DATA, jika ada;
+                // 2) sheet lain yang benar-benar memiliki header Kode Alat + Nama Alkes.
+                // Ini membuat importer kompatibel dengan DATABASE.xlsx versi lama
+                // maupun file sederhana seperti Lembar1 dengan header di baris 1.
+                const candidateSheetNames = [
+                    ...sheetNames.filter(n => norm(n) === 'big data'),
+                    ...sheetNames.filter(n => /big\s*data/i.test(String(n))),
+                    ...sheetNames.filter(n => !/big\s*data/i.test(String(n)))
+                ].filter((n, i, arr) => arr.indexOf(n) === i);
 
-                const sheet = workbook.Sheets[sheetName];
-                const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
-                if (!matrix.length) throw new Error(`Sheet "${sheetName}" kosong.`);
-
-                // Cari header secara toleran di 20 baris pertama.
+                let sheetName = '';
+                let sheet = null;
+                let matrix = null;
                 let headerIndex = -1;
-                for (let i = 0; i < Math.min(20, matrix.length); i++) {
-                    const headers = matrix[i].map(norm);
-                    const hasKode = headers.some(h => h === 'kode alat' || h.includes('kode alat'));
-                    const hasNama = headers.some(h => h === 'nama alkes' || h === 'nama alat' || h.includes('nama alkes'));
-                    if (hasKode && hasNama) { headerIndex = i; break; }
+
+                for (const candidate of candidateSheetNames) {
+                    const candidateSheet = workbook.Sheets[candidate];
+                    const candidateMatrix = XLSX.utils.sheet_to_json(candidateSheet, { header: 1, defval: '', raw: false });
+                    if (!candidateMatrix.length) continue;
+
+                    for (let i = 0; i < Math.min(30, candidateMatrix.length); i++) {
+                        const headers = candidateMatrix[i].map(norm);
+                        const hasKode = headers.some(h => h === 'kode alat' || h.includes('kode alat'));
+                        const hasNama = headers.some(h =>
+                            h === 'nama alkes' ||
+                            h === 'nama alat' ||
+                            h.includes('nama alkes') ||
+                            h.includes('nama alat kesehatan')
+                        );
+                        if (hasKode && hasNama) {
+                            sheetName = candidate;
+                            sheet = candidateSheet;
+                            matrix = candidateMatrix;
+                            headerIndex = i;
+                            break;
+                        }
+                    }
+                    if (sheetName) break;
                 }
-                if (headerIndex < 0) {
-                    throw new Error(`Sheet "${sheetName}" tidak memiliki struktur data yang cukup. Kolom "Kode Alat" dan "Nama Alkes" tidak ditemukan pada 20 baris pertama.`);
+
+                if (!sheetName || !matrix || headerIndex < 0) {
+                    throw new Error(
+                        `Tidak ditemukan sheet data aset yang valid. ` +
+                        `Workbook memiliki sheet: ${sheetNames.join(', ')}. ` +
+                        `Importer membutuhkan kolom "Kode Alat" dan "Nama Alkes/Nama Alat".`
+                    );
                 }
 
                 const headers = matrix[headerIndex].map((h, i) => String(h ?? '').trim() || `Kolom ${i + 1}`);

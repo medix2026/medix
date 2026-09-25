@@ -2511,6 +2511,15 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
     <!-- KUSTOM TOAST NOTIFICATION CONTAINER -->
     <div id="toast-container" class="fixed top-5 right-5 z-[999999] space-y-2 pointer-events-none"></div>
 
+    <!-- MEDIX IMPORTER NOTE:
+     Import Excel khusus DATABASE.xlsx:
+     - Sheet utama: BIG DATA
+     - Header: baris 6
+     - Data: mulai baris 7
+     - Kode Alat menjadi ID dokumen Firestore collection dataAlat
+     - Seluruh kolom sumber disimpan pada sourceExcel
+-->
+
     <!-- MEDIX CONFIRM DIALOG -->
     <div id="medix-confirm-dialog" class="hidden" role="dialog" aria-modal="true" aria-labelledby="medix-confirm-title" aria-describedby="medix-confirm-message">
         <div class="medix-dialog-card" role="document">
@@ -3782,13 +3791,12 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
             // Satu renderer untuk seluruh tombol header Master Data. Dengan cara ini
             // tombol label tidak mungkin terhapus ketika tombol lain dirender ulang.
             const masterTambah = masterRead && typeof izinMenu === 'function' && izinMenu('master', 'tambah');
-            const masterImport = masterRead && typeof izinMenu === 'function' && izinMenu('master', 'import');
+            const masterImport = masterRead && (canonicalRole(currentActiveRole) === 'Admin' || (typeof izinMenu === 'function' && izinMenu('master', 'import')));
             const masterExport = masterRead && typeof izinMenu === 'function' && izinMenu('master', 'export');
 
             const buttons = [];
             if (masterExport) buttons.push(`<button type="button" onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
-            if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import Excel<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
-            if (canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button type="button" onclick="importDatabaseJsonFromRepo()" class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Import database.json dari repository"><i class="fa-solid fa-database mr-1.5"></i> Import Database JSON</button>`);
+            if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import DATABASE.xlsx<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
             if (masterTambah) buttons.push(`<button type="button" onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
             if (canLabel) {
                 buttons.push(`<button type="button" id="btn-download-label-master" onclick="downloadLabelBarcodeMassalPdf()" class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Download seluruh label aset medis sebagai PDF"><i class="fa-solid fa-download mr-1.5"></i> Download Label</button>`);
@@ -3797,113 +3805,6 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
             container.innerHTML = buttons.join('');
             container.style.display = buttons.length ? 'flex' : 'none';
             container.setAttribute('aria-hidden', buttons.length ? 'false' : 'true');
-        }
-
-
-        async function importDatabaseJsonFromRepo() {
-            if (canonicalRole(currentActiveRole) !== 'Admin') {
-                showToast('Hanya Admin yang dapat mengimpor database.json.', 'error');
-                return;
-            }
-            if (!db || !auth.currentUser) {
-                showToast('Sesi Firebase belum siap. Silakan login kembali.', 'error');
-                return;
-            }
-
-            const ok = await medixConfirm(
-                'Import Database JSON',
-                'Database JSON akan dibaca dari file database.json pada repository lalu disimpan ke Firestore. Data dengan ID yang sama akan diperbarui. Lanjutkan?'
-            );
-            if (!ok) return;
-
-            try {
-                showToast('Membaca database.json...', 'info');
-
-                const response = await fetch('./database.json', {
-                    cache: 'no-store',
-                    headers: { 'Accept': 'application/json' }
-                });
-
-                if (!response.ok) {
-                    throw new Error(`database.json tidak dapat dibaca (HTTP ${response.status}).`);
-                }
-
-                const json = await response.json();
-                const sourceRows = Array.isArray(json?.dataAlat) ? json.dataAlat : [];
-
-                if (!sourceRows.length) {
-                    throw new Error('database.json ditemukan, tetapi array dataAlat kosong.');
-                }
-
-                const operations = [];
-                let skipped = 0;
-
-                sourceRows.forEach((item, index) => {
-                    if (!item || typeof item !== 'object') {
-                        skipped++;
-                        return;
-                    }
-
-                    const rawId = String(item.id ?? '').trim();
-                    const docId = rawId || String(item.kode ?? '').trim();
-
-                    if (!docId) {
-                        skipped++;
-                        console.warn('Baris database.json dilewati karena tidak memiliki id/kode:', index + 1, item);
-                        return;
-                    }
-
-                    // Pertahankan field asli database.json. Field tambahan hanya untuk
-                    // kompatibilitas dengan tampilan MEDIX yang memakai izinEdar/ruangan.
-                    const payload = {
-                        ...item,
-                        izinEdar: item.izinEdar ?? item.edar ?? '',
-                        ruangan: item.ruangan ?? item.lokasi ?? '',
-                        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-                        importSource: 'database.json'
-                    };
-
-                    operations.push({
-                        ref: db.collection('dataAlat').doc(docId),
-                        payload
-                    });
-                });
-
-                if (!operations.length) {
-                    throw new Error('Tidak ada dataAlat valid yang dapat diimpor.');
-                }
-
-                let completed = 0;
-                for (let i = 0; i < operations.length; i += 450) {
-                    const batch = db.batch();
-                    const chunk = operations.slice(i, i + 450);
-
-                    chunk.forEach(op => {
-                        batch.set(op.ref, op.payload, { merge: true });
-                    });
-
-                    await batch.commit();
-                    completed += chunk.length;
-                    showToast(`Import database: ${completed}/${operations.length} aset...`, 'info');
-                }
-
-                console.log('Import Database JSON selesai:', {
-                    totalSource: sourceRows.length,
-                    processed: operations.length,
-                    skipped,
-                    collection: 'dataAlat'
-                });
-
-                showToast(
-                    `Import database berhasil: ${operations.length} aset diproses${skipped ? `, ${skipped} baris dilewati` : ''}.`,
-                    'success'
-                );
-
-                if (typeof renderAll === 'function') renderAll();
-            } catch (error) {
-                console.error('Import Database JSON gagal:', error);
-                showToast('Import database gagal: ' + (error?.message || 'Kesalahan tidak diketahui.'), 'error');
-            }
         }
 
         function ensureUserEticketForm() {
@@ -9006,87 +8907,295 @@ function renderMaintenanceHistory() {
             }
         }
 
-        async function importDataDariExcel(event) {
-            const input = event?.target;
-            const file = input?.files?.[0];
-            if (!file) return;
-            if (currentActiveRole !== 'Admin') {
-                showToast('Hanya Admin yang dapat mengimpor Master Data Aset.', 'error');
-                if (input) input.value = '';
-                return;
-            }
-            if (typeof XLSX === 'undefined') {
-                showToast('Library Excel belum tersedia.', 'error');
-                return;
-            }
-            try {
-                showToast('Membaca file Excel...', 'info');
-                const buffer = await file.arrayBuffer();
-                const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
-                const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-                if (!rows.length) throw new Error('Sheet pertama tidak memiliki data.');
+        
+async function importDataDariExcel(event) {
+    const input = event?.target;
+    const file = input?.files?.[0];
+    if (!file) return;
 
-                const norm = value => String(value ?? '').trim().toLowerCase().replace(/[\s_\-\/]+/g, ' ');
-                const pick = (row, names) => {
-                    const entries = Object.entries(row);
-                    for (const wanted of names) {
-                        const wn = norm(wanted);
-                        const found = entries.find(([k]) => norm(k) === wn || norm(k).includes(wn));
-                        if (found && String(found[1]).trim() !== '') return String(found[1]).trim();
-                    }
-                    return '';
-                };
-                const existingByKey = new Map();
-                dataAlat.forEach(a => {
-                    const seri = norm(a.seri || a.serialNumber || '');
-                    if (seri) existingByKey.set('seri|' + seri, a);
-                    const key = [a.nama,a.merk,a.tipe,a.ruangan || a.lokasi].map(norm).join('|');
-                    if (key.replace(/\|/g,'').trim()) existingByKey.set('key|' + key, a);
-                });
+    if (canonicalRole(currentActiveRole) !== 'Admin') {
+        showToast('Hanya Admin yang dapat mengimpor Master Data Aset.', 'error');
+        if (input) input.value = '';
+        return;
+    }
 
-                const operations = [];
-                let skipped = 0;
-                rows.forEach(row => {
-                    const nama = pick(row, ['NAMA ALAT','NAMA ALKES','NAMA ALAT KESEHATAN','NAMA']);
-                    if (!nama) { skipped++; return; }
-                    const merk = pick(row, ['MERK','BRAND']);
-                    const tipe = pick(row, ['MODEL/TIPE','TIPE','MODEL','TYPE']);
-                    const seri = pick(row, ['SERIAL NUMBER','SERIAL NO','NO SERI','SERI','SN']);
-                    const izinEdar = pick(row, ['IZIN EDAR','NOMOR IZIN EDAR','IZIN']);
-                    const ruangan = pick(row, ['UNIT/RUANGAN','RUANGAN','UNIT','LOKASI']);
-                    const status = pick(row, ['STATUS OPERASIONAL','STATUS']) || 'Siap Digunakan';
-                    const emFungsi = pick(row, ['FUNGSI EM','EM FUNGSI','FUNGSI']);
-                    const emRisiko = pick(row, ['RISIKO EM','EM RISIKO','RISIKO']);
-                    const emPerawatan = pick(row, ['PERAWATAN EM','EM PERAWATAN','PERAWATAN']);
-                    const emInsiden = pick(row, ['INSIDEN EM','EM INSIDEN','INSIDEN']);
-                    const tanggalAcuanPM = pick(row, ['TANGGAL ACUAN PM','TANGGAL PM TERAKHIR','TANGGAL PM']);
-                    const payload = { nama, merk, tipe, seri, izinEdar, ruangan, status,
-                        emFungsi: emFungsi === '' ? null : Number(emFungsi),
-                        emRisiko: emRisiko === '' ? null : Number(emRisiko),
-                        emPerawatan: emPerawatan === '' ? null : Number(emPerawatan),
-                        emInsiden: emInsiden === '' ? null : Number(emInsiden),
-                        tanggalAcuanPM, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
-                    const keySeri = norm(seri);
-                    const keyFull = [nama,merk,tipe,ruangan].map(norm).join('|');
-                    const existing = (keySeri && existingByKey.get('seri|' + keySeri)) || existingByKey.get('key|' + keyFull);
-                    if (existing) operations.push({ ref: db.collection('dataAlat').doc(existing.id), payload, mode: 'update' });
-                    else operations.push({ ref: db.collection('dataAlat').doc(), payload: {...payload, createdAt: firebase.firestore.FieldValue.serverTimestamp()}, mode: 'add' });
-                });
-                if (!operations.length) throw new Error('Tidak ada baris valid yang dapat diimpor.');
-                for (let i = 0; i < operations.length; i += 450) {
-                    const batch = db.batch();
-                    operations.slice(i, i + 450).forEach(op => batch.set(op.ref, op.payload, { merge: true }));
-                    await batch.commit();
-                }
-                showToast(`Import selesai: ${operations.length} aset diproses${skipped ? `, ${skipped} baris dilewati` : ''}.`, 'success');
-            } catch (error) {
-                console.error('Import Master Data Aset gagal:', error);
-                showToast('Import gagal: ' + (error.message || 'format file tidak valid.'), 'error');
-            } finally {
-                if (input) input.value = '';
-            }
+    if (typeof XLSX === 'undefined') {
+        showToast('Library Excel belum tersedia.', 'error');
+        if (input) input.value = '';
+        return;
+    }
+
+    const resetInput = () => { if (input) input.value = ''; };
+
+    try {
+        showToast('Membaca DATABASE.xlsx...', 'info');
+
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, {
+            type: 'array',
+            cellDates: true,
+            cellNF: false,
+            cellText: true
+        });
+
+        // DATABASE.xlsx yang digunakan MEDIX memakai sheet "BIG DATA".
+        // Header berada pada baris ke-6 (index 5), data mulai baris ke-7.
+        const preferredSheet = workbook.Sheets['BIG DATA'] || workbook.Sheets['G DATA'];
+        const sheetName = workbook.Sheets['BIG DATA'] ? 'BIG DATA' : (preferredSheet ? 'G DATA' : workbook.SheetNames[0]);
+        const sheet = preferredSheet || workbook.Sheets[sheetName];
+
+        if (!sheet) {
+            throw new Error('Sheet data tidak ditemukan di workbook.');
         }
+
+        const matrix = XLSX.utils.sheet_to_json(sheet, {
+            header: 1,
+            defval: '',
+            raw: false
+        });
+
+        if (!Array.isArray(matrix) || matrix.length < 7) {
+            throw new Error(`Sheet "${sheetName}" tidak memiliki struktur data yang cukup. Header diharapkan pada baris 6.`);
+        }
+
+        // Cari baris header secara robust. Untuk DATABASE.xlsx normalnya baris 6.
+        let headerIndex = 5;
+        const normalizeHeader = (v) => String(v ?? '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, ' ');
+
+        const headerCandidates = matrix.slice(0, Math.min(matrix.length, 20));
+        const candidateIndex = headerCandidates.findIndex(row => {
+            const headers = (row || []).map(normalizeHeader);
+            return headers.includes('kode alat') &&
+                   (headers.includes('nama alkes') || headers.includes('nama alat kesehatan'));
+        });
+        if (candidateIndex >= 0) headerIndex = candidateIndex;
+
+        const rawHeaders = matrix[headerIndex] || [];
+        const headers = rawHeaders.map((h, idx) => {
+            const value = String(h ?? '').trim();
+            return value || `Kolom_${idx + 1}`;
+        });
+
+        const duplicateCounter = {};
+        const uniqueHeaders = headers.map((h) => {
+            const key = normalizeHeader(h) || 'kolom';
+            duplicateCounter[key] = (duplicateCounter[key] || 0) + 1;
+            return duplicateCounter[key] > 1 ? `${h}__${duplicateCounter[key]}` : h;
+        });
+
+        const rows = matrix.slice(headerIndex + 1)
+            .map(row => {
+                const obj = {};
+                uniqueHeaders.forEach((header, idx) => {
+                    obj[header] = row?.[idx] ?? '';
+                });
+                return obj;
+            })
+            .filter(row => Object.values(row).some(v => String(v ?? '').trim() !== ''));
+
+        if (!rows.length) {
+            throw new Error(`Sheet "${sheetName}" ditemukan, tetapi tidak ada baris data setelah header.`);
+        }
+
+        const findValue = (row, aliases) => {
+            const keys = Object.keys(row);
+            const normalized = {};
+            keys.forEach(k => normalized[normalizeHeader(k)] = k);
+
+            for (const alias of aliases) {
+                const exact = normalized[normalizeHeader(alias)];
+                if (exact !== undefined) return row[exact];
+            }
+
+            // Fallback: cari header yang mengandung alias penting.
+            for (const alias of aliases) {
+                const needle = normalizeHeader(alias);
+                const key = keys.find(k => normalizeHeader(k).includes(needle));
+                if (key) return row[key];
+            }
+            return '';
+        };
+
+        const clean = (v) => {
+            if (v === null || v === undefined) return '';
+            if (v instanceof Date) {
+                const y = v.getFullYear();
+                const m = String(v.getMonth() + 1).padStart(2, '0');
+                const d = String(v.getDate()).padStart(2, '0');
+                return `${y}-${m}-${d}`;
+            }
+            return String(v).trim();
+        };
+
+        const firstNonEmpty = (...values) => {
+            for (const v of values) {
+                const s = clean(v);
+                if (s) return s;
+            }
+            return '';
+        };
+
+        const operations = [];
+        const skipped = [];
+        const duplicateIds = new Set();
+        const seenIds = new Set();
+
+        rows.forEach((row, rowOffset) => {
+            const excelRow = headerIndex + rowOffset + 2;
+
+            const kode = firstNonEmpty(
+                findValue(row, ['Kode Alat']),
+                findValue(row, ['Kode']),
+                findValue(row, ['ID Alat'])
+            );
+
+            const nama = firstNonEmpty(
+                findValue(row, ['Nama Alkes']),
+                findValue(row, ['Nama Alat Kesehatan']),
+                findValue(row, ['Nama Alat'])
+            );
+
+            // Baris yang benar-benar kosong / subtotal tanpa kode dan nama dilewati.
+            if (!kode && !nama) return;
+
+            const docId = kode || firstNonEmpty(
+                findValue(row, ['No']),
+                findValue(row, ['ID'])
+            );
+
+            if (!docId) {
+                skipped.push({ row: excelRow, reason: 'Tidak memiliki Kode Alat/ID', data: row });
+                return;
+            }
+
+            if (seenIds.has(docId)) {
+                duplicateIds.add(docId);
+                skipped.push({ row: excelRow, reason: `Kode Alat duplikat: ${docId}`, data: row });
+                return;
+            }
+            seenIds.add(docId);
+
+            const payload = {
+                id: docId,
+                kode: kode || docId,
+                nama: nama,
+                merk: firstNonEmpty(findValue(row, ['Merk'])),
+                tipe: firstNonEmpty(findValue(row, ['Tipe']), findValue(row, ['Model / Tipe'])),
+                seri: firstNonEmpty(findValue(row, ['No Seri']), findValue(row, ['Nomor Seri']), findValue(row, ['No. Seri'])),
+                izinEdar: firstNonEmpty(
+                    findValue(row, ['No Izin Edar']),
+                    findValue(row, ['Izin Edar']),
+                    findValue(row, ['Nomor Izin Edar'])
+                ),
+                ruangan: firstNonEmpty(
+                    findValue(row, ['Ruangan']),
+                    findValue(row, ['Lokasi'])
+                ),
+
+                // Field tambahan dari DATABASE.xlsx.
+                bulanMasuk: firstNonEmpty(findValue(row, ['Bulan masuk']), findValue(row, ['Bulan Masuk'])),
+                tahunAnggaran: firstNonEmpty(findValue(row, ['Tahun Anggaran'])),
+                kategoriResiko: firstNonEmpty(findValue(row, ['KATEGORI RESIKO']), findValue(row, ['Kategori Resiko'])),
+                distributor: firstNonEmpty(findValue(row, ['DISTRIBUTOR / PRODUSEN']), findValue(row, ['Distributor / Produsen'])),
+                sumberPendanaan: firstNonEmpty(findValue(row, ['Sumber Pendanaan'])),
+                hargaPerolehan: firstNonEmpty(findValue(row, ['Harga Perolehan'])),
+                namaMarketing: firstNonEmpty(findValue(row, ['Nama Marketing'])),
+                kontakMarketing: firstNonEmpty(findValue(row, ['Kontak'])),
+                namaTeknisi: firstNonEmpty(findValue(row, ['Nama Teknisi'])),
+                kewajibanKalibrasi: firstNonEmpty(findValue(row, ['Kewajiban Kalibrasi'])),
+                klasifikasiTeknologi: firstNonEmpty(findValue(row, ['Klasifikasi Alkes (Teknologi)'])),
+                klasifikasiJenis: firstNonEmpty(findValue(row, ['Klasifikasi Alkes (Jenis)'])),
+                klasifikasiKategori: firstNonEmpty(findValue(row, ['Klasifikasi Alkes (Kategori)'])),
+                klasifikasiNamaRekening: firstNonEmpty(findValue(row, ['Klasifikasi Alkes (Nama Rekening)'])),
+
+                // Tetap pertahankan seluruh kolom sumber agar data tidak hilang.
+                sourceExcel: row,
+                importSource: 'DATABASE.xlsx / G DATA',
+                importExcelRow: excelRow,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
+
+            // Jangan mengisi status secara sembarang bila Excel tidak memilikinya.
+            // Jika ada kolom status/kondisi, simpan nilainya.
+            const kondisi = firstNonEmpty(
+                findValue(row, ['Kondisi Produk']),
+                findValue(row, ['Kondisi']),
+                findValue(row, ['Status'])
+            );
+            if (kondisi) payload.kondisi = kondisi;
+
+            operations.push({
+                ref: db.collection('dataAlat').doc(docId),
+                payload
+            });
+        });
+
+        if (!operations.length) {
+            throw new Error('Tidak ada data aset valid. Pastikan sheet BIG DATA memiliki kolom Kode Alat dan Nama Alkes.');
+        }
+
+        const total = operations.length;
+
+        // Konfirmasi kedua setelah file berhasil dibaca, supaya Admin mengetahui jumlah data.
+        const confirmed = await medixConfirm(
+            'Konfirmasi Import DATABASE.xlsx',
+            `File "${file.name}" berhasil dibaca. Sheet: "${sheetName}". Ditemukan ${total} aset valid${skipped.length ? ` dan ${skipped.length} baris dilewati` : ''}. Data dengan Kode Alat yang sama akan diperbarui. Lanjutkan ke Firestore?`
+        );
+        if (!confirmed) {
+            resetInput();
+            showToast('Import dibatalkan.', 'info');
+            return;
+        }
+
+        let completed = 0;
+        for (let i = 0; i < operations.length; i += 450) {
+            const chunk = operations.slice(i, i + 450);
+            const batch = db.batch();
+
+            chunk.forEach(op => {
+                batch.set(op.ref, op.payload, { merge: true });
+            });
+
+            await batch.commit();
+            completed += chunk.length;
+            showToast(`Import DATABASE.xlsx: ${completed}/${total} aset...`, 'info');
+        }
+
+        console.log('Import DATABASE.xlsx selesai:', {
+            file: file.name,
+            sheet: sheetName,
+            headerRow: headerIndex + 1,
+            totalRows: rows.length,
+            processed: operations.length,
+            skipped: skipped.length,
+            duplicateIds: Array.from(duplicateIds),
+            skippedRows: skipped.slice(0, 100),
+            collection: 'dataAlat'
+        });
+
+        if (typeof renderAll === 'function') renderAll();
+
+        if (skipped.length) {
+            console.warn('Baris DATABASE.xlsx yang dilewati:', skipped);
+            showToast(
+                `Import berhasil: ${operations.length} aset masuk. ${skipped.length} baris dilewati. Lihat Console untuk detail.`,
+                'success'
+            );
+        } else {
+            showToast(`Import DATABASE.xlsx berhasil: ${operations.length} aset masuk ke Master Data Aset.`, 'success');
+        }
+
+    } catch (error) {
+        console.error('Import DATABASE.xlsx gagal:', error);
+        showToast('Import DATABASE.xlsx gagal: ' + (error?.message || 'Kesalahan tidak diketahui.'), 'error');
+    } finally {
+        resetInput();
+    }
+}
+
 
         async function submitFormUserAdmin(e) {
             e.preventDefault();

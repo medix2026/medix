@@ -3674,13 +3674,13 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
 
     <script>
         const firebaseConfig = {
-          apiKey: "AIzaSyDVOhYxAQr8AlMDBkWP3p7nHy7SYvJVlIY",
-          authDomain: "medix2026.firebaseapp.com",
-          projectId: "medix2026",
-          storageBucket: "medix2026.firebasestorage.app",
-          messagingSenderId: "562363380999",
-          appId: "1:562363380999:web:4e54b9a9f7b2a9976c81a2",
-          measurementId: "G-HCNLCVN6Y2"
+            apiKey: "AIzaSyC9TDnm98rLYGmrbF51OjQp4u4I0zOxu18",
+            authDomain: "medix-rsudpg.firebaseapp.com",
+            projectId: "medix-rsudpg",
+            storageBucket: "medix-rsudpg.firebasestorage.app",
+            messagingSenderId: "180949383110",
+            appId: "1:180949383110:web:cdda6afad7c54c555e24c7",
+            measurementId: "G-MZ45688DDB"
         };
         
         if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
@@ -3788,6 +3788,7 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
             const buttons = [];
             if (masterExport) buttons.push(`<button type="button" onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
             if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import Excel<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
+            if (canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button type="button" onclick="importDatabaseJsonFromRepo()" class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Import database.json dari repository"><i class="fa-solid fa-database mr-1.5"></i> Import Database JSON</button>`);
             if (masterTambah) buttons.push(`<button type="button" onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
             if (canLabel) {
                 buttons.push(`<button type="button" id="btn-download-label-master" onclick="downloadLabelBarcodeMassalPdf()" class="bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Download seluruh label aset medis sebagai PDF"><i class="fa-solid fa-download mr-1.5"></i> Download Label</button>`);
@@ -3796,6 +3797,113 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
             container.innerHTML = buttons.join('');
             container.style.display = buttons.length ? 'flex' : 'none';
             container.setAttribute('aria-hidden', buttons.length ? 'false' : 'true');
+        }
+
+
+        async function importDatabaseJsonFromRepo() {
+            if (canonicalRole(currentActiveRole) !== 'Admin') {
+                showToast('Hanya Admin yang dapat mengimpor database.json.', 'error');
+                return;
+            }
+            if (!db || !auth.currentUser) {
+                showToast('Sesi Firebase belum siap. Silakan login kembali.', 'error');
+                return;
+            }
+
+            const ok = await medixConfirm(
+                'Import Database JSON',
+                'Database JSON akan dibaca dari file database.json pada repository lalu disimpan ke Firestore. Data dengan ID yang sama akan diperbarui. Lanjutkan?'
+            );
+            if (!ok) return;
+
+            try {
+                showToast('Membaca database.json...', 'info');
+
+                const response = await fetch('./database.json', {
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`database.json tidak dapat dibaca (HTTP ${response.status}).`);
+                }
+
+                const json = await response.json();
+                const sourceRows = Array.isArray(json?.dataAlat) ? json.dataAlat : [];
+
+                if (!sourceRows.length) {
+                    throw new Error('database.json ditemukan, tetapi array dataAlat kosong.');
+                }
+
+                const operations = [];
+                let skipped = 0;
+
+                sourceRows.forEach((item, index) => {
+                    if (!item || typeof item !== 'object') {
+                        skipped++;
+                        return;
+                    }
+
+                    const rawId = String(item.id ?? '').trim();
+                    const docId = rawId || String(item.kode ?? '').trim();
+
+                    if (!docId) {
+                        skipped++;
+                        console.warn('Baris database.json dilewati karena tidak memiliki id/kode:', index + 1, item);
+                        return;
+                    }
+
+                    // Pertahankan field asli database.json. Field tambahan hanya untuk
+                    // kompatibilitas dengan tampilan MEDIX yang memakai izinEdar/ruangan.
+                    const payload = {
+                        ...item,
+                        izinEdar: item.izinEdar ?? item.edar ?? '',
+                        ruangan: item.ruangan ?? item.lokasi ?? '',
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        importSource: 'database.json'
+                    };
+
+                    operations.push({
+                        ref: db.collection('dataAlat').doc(docId),
+                        payload
+                    });
+                });
+
+                if (!operations.length) {
+                    throw new Error('Tidak ada dataAlat valid yang dapat diimpor.');
+                }
+
+                let completed = 0;
+                for (let i = 0; i < operations.length; i += 450) {
+                    const batch = db.batch();
+                    const chunk = operations.slice(i, i + 450);
+
+                    chunk.forEach(op => {
+                        batch.set(op.ref, op.payload, { merge: true });
+                    });
+
+                    await batch.commit();
+                    completed += chunk.length;
+                    showToast(`Import database: ${completed}/${operations.length} aset...`, 'info');
+                }
+
+                console.log('Import Database JSON selesai:', {
+                    totalSource: sourceRows.length,
+                    processed: operations.length,
+                    skipped,
+                    collection: 'dataAlat'
+                });
+
+                showToast(
+                    `Import database berhasil: ${operations.length} aset diproses${skipped ? `, ${skipped} baris dilewati` : ''}.`,
+                    'success'
+                );
+
+                if (typeof renderAll === 'function') renderAll();
+            } catch (error) {
+                console.error('Import Database JSON gagal:', error);
+                showToast('Import database gagal: ' + (error?.message || 'Kesalahan tidak diketahui.'), 'error');
+            }
         }
 
         function ensureUserEticketForm() {

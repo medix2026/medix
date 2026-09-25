@@ -3633,64 +3633,27 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
         
         async function loadFirebaseUserProfile(firebaseUser) {
             if (!firebaseUser) return null;
-        
             try {
-                console.log(
-                    "[MEDIX] Membaca profil:",
-                    firebaseUser.uid
-                );
-        
-                const ref = db.collection("users").doc(firebaseUser.uid);
-                const snap = await ref.get();
-        
-                console.log("[MEDIX] Profil ditemukan:", snap.exists);
-        
-                if (!snap.exists) {
-                    console.error(
-                        "[MEDIX] Dokumen users tidak ditemukan untuk UID:",
-                        firebaseUser.uid
-                    );
-                    return null;
-                }
-        
+                // Struktur akun MEDIX sekarang konsisten: users/{Firebase Auth UID}.
+                // Tidak lagi melakukan query fallback email/username sehingga login
+                // cukup satu pembacaan profil Firestore.
+                const snap = await db.collection('users').doc(firebaseUser.uid).get();
+                if (!snap.exists) return null;
+
                 const data = snap.data() || {};
-        
-                console.log("[MEDIX] Data profil:", data);
-        
-                // Hanya akun yang secara eksplisit dinonaktifkan yang ditolak.
-                if (data.aktif === false) {
-                    console.error("[MEDIX] Akun tidak aktif.");
-                    return null;
-                }
-        
+                if (data.aktif === false) return null;
+
                 return {
                     uid: firebaseUser.uid,
-                    email: firebaseUser.email || data.email || "",
-                    nama: data.nama || data.username || firebaseUser.email || "User",
-                    username: data.username || data.email || firebaseUser.email || "",
-                    role: data.role || "User",
-                    aktif: data.aktif !== false,
-                    menuAkses: data.menuAkses || {}
+                    email: firebaseUser.email || data.email || '',
+                    ...data
                 };
-        
             } catch (error) {
-        
-                console.error(
-                    "[MEDIX] Gagal membaca profil Firestore:",
-                    error.code,
-                    error.message
-                );
-        
-                /*
-                 * PENTING:
-                 * Jangan langsung signOut di sini.
-                 * Kalau Firestore sedang offline/error sementara,
-                 * session Firebase tetap dipertahankan.
-                 */
+                console.error('Gagal mengambil profil user:', error);
                 return null;
             }
         }
-        
+
         function canonicalRole(role) {
             const r = String(role || 'User').trim().toLowerCase();
             if (r === 'admin') return 'Admin';
@@ -5177,201 +5140,153 @@ async function logoutFirebase() {
         auth.onAuthStateChanged(async (firebaseUser) => {
 
             const gateScreen =
-                document.getElementById("auth-gate-screen");
+                document.getElementById(
+                    'auth-gate-screen'
+                );
         
-            // =========================================
-            // BELUM LOGIN
-            // =========================================
+            // ========================================
+            // TIDAK LOGIN
+            // ========================================
+        
             if (!firebaseUser) {
-        
                 hentikanListenerFirestore();
-        
                 currentUser = null;
                 currentUserNama = "";
                 currentActiveRole = "";
                 userAksesMenuArray = {};
         
                 if (gateScreen) {
-                    gateScreen.classList.remove("hidden");
+                    gateScreen.classList.remove('hidden');
                 }
         
-                console.log("[MEDIX] Tidak ada user Firebase yang login.");
+                console.log(
+                    "Tidak ada user Firebase yang login."
+                );
         
                 return;
             }
         
-            // =========================================
-            // FIREBASE AUTH BERHASIL
-            // =========================================
+        
+            // ========================================
+            // LOGIN / RESTORE SESSION
+            // ========================================
+        
             console.log(
-                "[MEDIX] Firebase user aktif:",
-                firebaseUser.uid,
-                firebaseUser.email
+                "Firebase user aktif:",
+                firebaseUser.uid
             );
         
             try {
         
                 const userData =
-                    await loadFirebaseUserProfile(firebaseUser);
+                    await loadFirebaseUserProfile(
+                        firebaseUser
+                    );
         
-                // =========================================
-                // PROFIL TIDAK DITEMUKAN
-                // =========================================
                 if (!userData) {
         
-                    console.error(
-                        "[MEDIX] Profil Firestore tidak dapat dimuat."
-                    );
-        
-                    /*
-                     * JANGAN signOut otomatis.
-                     *
-                     * Ini penting agar error Firestore sementara
-                     * tidak membuat user dilempar kembali ke login.
-                     */
-        
-                    if (gateScreen) {
-                        gateScreen.classList.remove("hidden");
-                    }
-        
-                    const loginMessage =
-                        document.getElementById("gate-subtitle");
-        
-                    if (loginMessage) {
-                        loginMessage.innerText =
-                            "Sesi Firebase aktif. Profil pengguna sedang dimuat...";
-                    }
+                    await auth.signOut();
         
                     return;
                 }
         
-                // =========================================
-                // PASTIKAN UID
-                // =========================================
-                userData.uid = firebaseUser.uid;
         
-                // =========================================
-                // TERAPKAN USER CONTEXT
-                // =========================================
-                const contextBerhasil =
-                    applyUserContext(userData);
+                userData.uid =
+                    firebaseUser.uid;
         
-                if (contextBerhasil === false) {
         
-                    console.error(
-                        "[MEDIX] applyUserContext gagal."
-                    );
+                // ====================================
+                // CONTEXT
+                // ====================================
         
-                    if (gateScreen) {
-                        gateScreen.classList.remove("hidden");
-                    }
+                applyUserContext(
+                    userData
+                );
         
-                    return;
-                }
         
                 console.log(
-                    "[MEDIX] User context berhasil:",
+                    "User context berhasil:",
                     currentUser
                 );
         
-                // =========================================
+        
+                // ====================================
                 // SIDEBAR
-                // =========================================
-                try {
-                    renderSidebarByPermission();
-                } catch (error) {
-                    console.error(
-                        "[MEDIX] Error render sidebar:",
-                        error
-                    );
-                }
+                // ====================================
         
-                // =========================================
+                renderSidebarByPermission();
+        
+        
+                // ====================================
                 // FIRESTORE LISTENER
-                // =========================================
-                try {
-                    mulaiListenerFirestore();
-                } catch (error) {
-                    console.error(
-                        "[MEDIX] Error mulai listener Firestore:",
-                        error
+                // ====================================
+        
+                mulaiListenerFirestore();
+        
+        
+                // ====================================
+                // TUTUP LOGIN
+                // ====================================
+        
+                if (gateScreen) {
+                    gateScreen.classList.add(
+                        'hidden'
                     );
                 }
         
-                // =========================================
-                // TUTUP LOGIN SCREEN
-                // =========================================
-                if (gateScreen) {
-                    gateScreen.classList.add("hidden");
-                }
         
-                // =========================================
+                // ====================================
                 // ROLE BADGE
-                // =========================================
+                // ====================================
+        
                 const roleBadge =
-                    document.getElementById("sidebar-role-badge");
+                    document.getElementById(
+                        'sidebar-role-badge'
+                    );
         
                 if (roleBadge) {
                     roleBadge.innerText =
-                        currentActiveRole || "User";
+                        currentActiveRole;
                 }
         
-                // =========================================
+        
+                // ====================================
                 // NAMA USER
-                // =========================================
+                // ====================================
+        
                 const profilCard =
                     document.querySelector(
-                        "#app-sidebar p.truncate"
+                        '#app-sidebar p.truncate'
                     );
         
                 if (profilCard) {
                     profilCard.innerText =
-                        currentUserNama || firebaseUser.email || "User";
+                        currentUserNama;
                 }
         
-                // =========================================
-                // FOOTER ACCOUNT
-                // =========================================
-                try {
-                    if (typeof medixSyncSidebarFooterAccount === "function") {
-                        medixSyncSidebarFooterAccount();
-                    }
-                } catch (error) {
-                    console.warn(
-                        "[MEDIX] Footer account gagal:",
-                        error
-                    );
-                }
         
                 console.log(
-                    "[MEDIX] Session MEDIX siap:",
-                    currentUserNama,
-                    currentActiveRole
+                    "Session MEDIX siap."
                 );
+        
         
             } catch (error) {
         
                 console.error(
-                    "[MEDIX] Gagal memulihkan session:",
+                    "Gagal memulihkan session Firebase:",
                     error
                 );
         
-                /*
-                 * JANGAN signOut.
-                 *
-                 * Firebase Auth sudah berhasil.
-                 * Jangan menghapus session hanya karena
-                 * komponen UI/Firestore lain mengalami error.
-                 */
+                await auth.signOut();
         
                 if (gateScreen) {
-                    gateScreen.classList.remove("hidden");
+                    gateScreen.classList.remove(
+                        'hidden'
+                    );
                 }
-        
             }
-        
         });
-        
+
         function bukaFormMaintenance(equipmentId) {
 
             const permission =
@@ -6342,6 +6257,7 @@ function renderMaintenanceHistory() {
                     const buttons = [];
                     if (masterExport) buttons.push(`<button onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
                     if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import Excel<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
+                    if (masterImport && canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button type="button" onclick="importDatabaseJsonFromRepo()" class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Import database.json ke Firestore"><i class="fa-solid fa-database mr-1.5"></i> Import Database JSON</button>`);
                     if (masterTambah) buttons.push(`<button onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
                     if (masterRead && canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button onclick="cetakLabelBarcodeMassalPdf()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Khusus Admin"><i class="fa-solid fa-qrcode mr-1.5"></i> Download Semua Barcode</button>`);
                     containerMasterAction.innerHTML = buttons.join('');
@@ -9181,6 +9097,163 @@ function renderMaintenanceHistory() {
             }
         }
 
+        // ============================================================
+        // IMPORT DATABASE.JSON -> FIRESTORE
+        // Admin only. Sumber: ./database.json pada root GitHub Pages.
+        // Document ID dipertahankan dari field "id" agar import idempoten.
+        // ============================================================
+        let medixDatabaseImportRunning = false;
+
+        function normalisasiDatabaseRow(row) {
+            if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+            const clean = {};
+            Object.entries(row).forEach(([key, value]) => {
+                if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') return;
+                clean[key] = value;
+            });
+
+            // Kompatibilitas schema database.json dengan schema Master Data MEDIX.
+            // "edar" pada database awal berisi unit/ruangan, sedangkan "lokasi"
+            // berisi kondisi (contoh: "Baik"). Nilai sumber tetap dipertahankan.
+            if (clean.izinEdar == null && clean.izin_edar != null) clean.izinEdar = clean.izin_edar;
+            if (clean.ruangan == null && clean.edar != null) clean.ruangan = clean.edar;
+            if (clean.kondisi == null && clean.lokasi != null) clean.kondisi = clean.lokasi;
+
+            return clean;
+        }
+
+        function validasiDatabaseJsonPayload(database) {
+            const collections = ['dataAlat', 'dataKalibrasi', 'dataPerbaikan', 'dataPM', 'dataInspeksi'];
+            if (!database || typeof database !== 'object' || Array.isArray(database)) {
+                throw new Error('Format database.json harus berupa object JSON.');
+            }
+            const hasil = {};
+            collections.forEach(name => {
+                if (database[name] == null) {
+                    hasil[name] = [];
+                    return;
+                }
+                if (!Array.isArray(database[name])) {
+                    throw new Error(`Koleksi ${name} harus berupa array.`);
+                }
+                hasil[name] = database[name];
+            });
+            return hasil;
+        }
+
+        async function importDatabaseJsonFromRepo() {
+            if (medixDatabaseImportRunning) {
+                showToast('Import database sedang berjalan. Mohon tunggu sampai selesai.', 'warning');
+                return;
+            }
+            if (canonicalRole(currentActiveRole) !== 'Admin' || !izinMenu('master', 'import')) {
+                showToast('Hanya Admin dengan izin Import yang dapat menjalankan import database.', 'error');
+                return;
+            }
+            if (!auth.currentUser) {
+                showToast('Sesi login tidak ditemukan. Silakan login kembali.', 'error');
+                return;
+            }
+
+            try {
+                medixDatabaseImportRunning = true;
+                showToast('Membaca database.json...', 'info');
+
+                const response = await fetch('./database.json', {
+                    method: 'GET',
+                    cache: 'no-store',
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    throw new Error(`database.json tidak dapat dibaca (HTTP ${response.status}).`);
+                }
+
+                const rawDatabase = await response.json();
+                const database = validasiDatabaseJsonPayload(rawDatabase);
+                const summary = Object.fromEntries(
+                    Object.entries(database).map(([name, rows]) => [name, rows.length])
+                );
+                const total = Object.values(summary).reduce((a, b) => a + b, 0);
+
+                if (!total) {
+                    showToast('database.json tidak berisi data yang dapat diimport.', 'warning');
+                    return;
+                }
+
+                const ringkasan = Object.entries(summary)
+                    .filter(([, count]) => count > 0)
+                    .map(([name, count]) => `${name}: ${count}`)
+                    .join(', ');
+
+                const lanjut = await showConfirmDialog(
+                    `Import database.json ke Firestore sekarang?\n\n${ringkasan}\n\nImport tidak menghapus dokumen Firestore yang tidak ada di JSON. Data dengan ID yang sama akan diperbarui (merge).`,
+                    {
+                        title: 'Konfirmasi Import Database',
+                        okText: 'Ya, Import',
+                        cancelText: 'Batal',
+                        icon: 'fa-database'
+                    }
+                );
+                if (!lanjut) return;
+
+                const BATCH_SIZE = 450;
+                const collections = Object.keys(database);
+                let totalProcessed = 0;
+                let totalBatches = 0;
+
+                for (const collectionName of collections) {
+                    const rows = database[collectionName];
+                    if (!rows.length) continue;
+
+                    const operations = [];
+                    const seenIds = new Set();
+                    let generatedIdCount = 0;
+
+                    rows.forEach((row, index) => {
+                        const clean = normalisasiDatabaseRow(row);
+                        if (!clean) return;
+
+                        let docId = clean.id != null ? String(clean.id).trim() : '';
+                        if (!docId) {
+                            docId = db.collection(collectionName).doc().id;
+                            generatedIdCount++;
+                        }
+                        if (seenIds.has(docId)) {
+                            throw new Error(`Duplikat ID "${docId}" ditemukan di ${collectionName} (baris ${index + 1}).`);
+                        }
+                        seenIds.add(docId);
+
+                        operations.push({
+                            ref: db.collection(collectionName).doc(docId),
+                            payload: clean
+                        });
+                    });
+
+                    for (let i = 0; i < operations.length; i += BATCH_SIZE) {
+                        const chunk = operations.slice(i, i + BATCH_SIZE);
+                        const batch = db.batch();
+                        chunk.forEach(op => batch.set(op.ref, op.payload, { merge: true }));
+                        await batch.commit();
+                        totalProcessed += chunk.length;
+                        totalBatches++;
+                        showToast(`Import ${collectionName}: ${Math.min(i + chunk.length, operations.length)}/${operations.length} data...`, 'info');
+                    }
+
+                    if (generatedIdCount) {
+                        console.warn(`[MEDIX] ${collectionName}: ${generatedIdCount} dokumen tidak memiliki field id, sehingga dibuat ID Firestore otomatis.`);
+                    }
+                }
+
+                showToast(`Import database selesai: ${totalProcessed} dokumen diproses dalam ${totalBatches} batch.`, 'success');
+                console.log('[MEDIX] Import database.json selesai:', { summary, totalProcessed, totalBatches });
+            } catch (error) {
+                console.error('[MEDIX] Import database.json gagal:', error);
+                showToast('Import database gagal: ' + (error?.message || 'Terjadi kesalahan.'), 'error');
+            } finally {
+                medixDatabaseImportRunning = false;
+            }
+        }
+
         async function submitFormUserAdmin(e) {
             e.preventDefault();
             if (currentActiveRole !== 'Admin' || !izinMenu('akun', 'edit')) {
@@ -10834,217 +10907,26 @@ body { overflow-x: hidden !important; }
     const bar=table.parentElement?.querySelector(':scope > .medix-mobile-filter-bar'); if(!bar)return;
     const n=getState(table).filters.size; const btn=bar.querySelector('button'); if(btn)btn.innerHTML=`<i class="fa-solid fa-filter"></i> Buka Filter${n?' ('+n+')':''}`;
   }
-    
   function decorateTable(table){
-
-        if (!table) return;
-    
-        if (
-            !table.tHead ||
-            !table.tHead.rows ||
-            !table.tHead.rows.length ||
-            !table.tHead.rows[0] ||
-            !table.tHead.rows[0].cells ||
-            !table.tHead.rows[0].cells.length ||
-            table.dataset.medixFiltersReady === "1"
-        ) {
-            return;
-        }
-    
-        const headerRow = table.tHead.rows[0];
-    
-        table.dataset.medixFiltersReady = "1";
-    
-        table.classList.add(
-            "medix-filterable-table"
-        );
-    
-        Array.from(headerRow.cells).forEach((th, i) => {
-    
-            if (!th) return;
-    
-            if (
-                typeof isFilterableHeader === "function" &&
-                !isFilterableHeader(th.innerText)
-            ) {
-                return;
-            }
-    
-            th.classList.add("medix-filter-th");
-    
-            const b =
-                document.createElement("button");
-    
-            b.type = "button";
-    
-            b.className =
-                "medix-filter-btn";
-    
-            b.dataset.col = i;
-    
-            b.title =
-                "Filter kolom";
-    
-            b.setAttribute(
-                "aria-label",
-                "Filter " +
-                (typeof norm === "function"
-                    ? norm(th.innerText)
-                    : th.innerText)
-            );
-    
-            b.innerHTML =
-                '<i class="fa-solid fa-filter"></i>';
-    
-            b.addEventListener(
-                "click",
-                e => {
-    
-                    e.stopPropagation();
-    
-                    if (
-                        typeof openPopup === "function"
-                    ) {
-                        openPopup(
-                            table,
-                            i,
-                            b
-                        );
-                    }
-                }
-            );
-    
-            th.appendChild(b);
-        });
-    
-        const host =
-            table.parentElement;
-    
-        if (
-            host &&
-            !host.querySelector(
-                ":scope > .medix-mobile-filter-bar"
-            )
-        ) {
-    
-            const bar =
-                document.createElement("div");
-    
-            bar.className =
-                "medix-mobile-filter-bar no-print";
-    
-            const options =
-                Array.from(
-                    headerRow.cells
-                )
-                .map((th, i) => {
-    
-                    const filterable =
-                        typeof isFilterableHeader === "function"
-                            ? isFilterableHeader(th.innerText)
-                            : true;
-    
-                    if (!filterable) {
-                        return "";
-                    }
-    
-                    const label =
-                        typeof norm === "function"
-                            ? norm(th.innerText)
-                            : th.innerText;
-    
-                    const escaped =
-                        typeof escapeHtml === "function"
-                            ? escapeHtml(label)
-                            : label;
-    
-                    return `
-                        <option value="${i}">
-                            ${escaped}
-                        </option>
-                    `;
-                })
-                .join("");
-    
-            bar.innerHTML = `
-                <select
-                    class="medix-mobile-filter-select"
-                    aria-label="Pilih kolom filter"
-                >
-                    <option value="">
-                        Pilih kolom...
-                    </option>
-                    ${options}
-                </select>
-    
-                <button
-                    type="button"
-                    class="medix-mobile-filter-btn"
-                >
-                    <i class="fa-solid fa-filter"></i>
-                    Buka Filter
-                </button>
-            `;
-    
-            const sel =
-                bar.querySelector("select");
-    
-            const btn =
-                bar.querySelector("button");
-    
-            if (btn) {
-    
-                btn.onclick = () => {
-    
-                    const col =
-                        Number(sel?.value);
-    
-                    if (
-                        Number.isInteger(col) &&
-                        col >= 0 &&
-                        headerRow.cells[col]
-                    ) {
-    
-                        const filterBtn =
-                            headerRow
-                                .cells[col]
-                                .querySelector(
-                                    ".medix-filter-btn"
-                                );
-    
-                        if (
-                            filterBtn &&
-                            typeof openPopup === "function"
-                        ) {
-                            openPopup(
-                                table,
-                                col,
-                                filterBtn
-                            );
-                        }
-                    }
-                };
-            }
-    
-            host.insertBefore(
-                bar,
-                table
-            );
-        }
-    
-        if (
-            typeof observeBody === "function"
-        ) {
-            observeBody(table);
-        }
-    
-        if (
-            typeof apply === "function"
-        ) {
-            apply(table);
-        }
+    if(!table.tHead || table.dataset.medixFiltersReady==='1') return;
+    table.dataset.medixFiltersReady='1'; table.classList.add('medix-filterable-table');
+    Array.from(table.tHead.rows[0].cells).forEach((th,i)=>{
+      if(!isFilterableHeader(th.innerText)) return;
+      th.classList.add('medix-filter-th');
+      const b=document.createElement('button'); b.type='button'; b.className='medix-filter-btn'; b.dataset.col=i; b.title='Filter kolom'; b.setAttribute('aria-label','Filter '+norm(th.innerText)); b.innerHTML='<i class="fa-solid fa-filter"></i>';
+      b.addEventListener('click',e=>{e.stopPropagation();openPopup(table,i,b);}); th.appendChild(b);
+    });
+    const host=table.parentElement;
+    if(host && !host.querySelector(':scope > .medix-mobile-filter-bar')){
+      const bar=document.createElement('div'); bar.className='medix-mobile-filter-bar no-print';
+      const options=Array.from(table.tHead.rows[0].cells).map((th,i)=>isFilterableHeader(th.innerText)?`<option value="${i}">${escapeHtml(norm(th.innerText))}</option>`:'').join('');
+      bar.innerHTML=`<select class="medix-mobile-filter-select" aria-label="Pilih kolom filter"><option value="">Pilih kolom...</option>${options}</select><button type="button" class="medix-mobile-filter-btn"><i class="fa-solid fa-filter"></i> Buka Filter</button>`;
+      const sel=bar.querySelector('select');
+      bar.querySelector('button').onclick=()=>{ const col=Number(sel.value); if(Number.isInteger(col) && col>=0){const btn=table.tHead.rows[0].cells[col]?.querySelector('.medix-filter-btn'); if(btn)openPopup(table,col,btn);} };
+      host.insertBefore(bar,table);
     }
-    
+    observeBody(table); apply(table);
+  }
   function observeBody(table){
     if(table.dataset.medixObserver==='1') return; table.dataset.medixObserver='1';
     Array.from(table.tBodies||[]).forEach(tb=>new MutationObserver(()=>{clearTimeout(tb._medixTimer);tb._medixTimer=setTimeout(()=>apply(table),0);}).observe(tb,{childList:true}));

@@ -3633,27 +3633,64 @@ body.dark-mode .medix-mobile-filter-btn { background:#172033; color:#e2e8f0; bor
         
         async function loadFirebaseUserProfile(firebaseUser) {
             if (!firebaseUser) return null;
+        
             try {
-                // Struktur akun MEDIX sekarang konsisten: users/{Firebase Auth UID}.
-                // Tidak lagi melakukan query fallback email/username sehingga login
-                // cukup satu pembacaan profil Firestore.
-                const snap = await db.collection('users').doc(firebaseUser.uid).get();
-                if (!snap.exists) return null;
-
+                console.log(
+                    "[MEDIX] Membaca profil:",
+                    firebaseUser.uid
+                );
+        
+                const ref = db.collection("users").doc(firebaseUser.uid);
+                const snap = await ref.get();
+        
+                console.log("[MEDIX] Profil ditemukan:", snap.exists);
+        
+                if (!snap.exists) {
+                    console.error(
+                        "[MEDIX] Dokumen users tidak ditemukan untuk UID:",
+                        firebaseUser.uid
+                    );
+                    return null;
+                }
+        
                 const data = snap.data() || {};
-                if (data.aktif === false) return null;
-
+        
+                console.log("[MEDIX] Data profil:", data);
+        
+                // Hanya akun yang secara eksplisit dinonaktifkan yang ditolak.
+                if (data.aktif === false) {
+                    console.error("[MEDIX] Akun tidak aktif.");
+                    return null;
+                }
+        
                 return {
                     uid: firebaseUser.uid,
-                    email: firebaseUser.email || data.email || '',
-                    ...data
+                    email: firebaseUser.email || data.email || "",
+                    nama: data.nama || data.username || firebaseUser.email || "User",
+                    username: data.username || data.email || firebaseUser.email || "",
+                    role: data.role || "User",
+                    aktif: data.aktif !== false,
+                    menuAkses: data.menuAkses || {}
                 };
+        
             } catch (error) {
-                console.error('Gagal mengambil profil user:', error);
+        
+                console.error(
+                    "[MEDIX] Gagal membaca profil Firestore:",
+                    error.code,
+                    error.message
+                );
+        
+                /*
+                 * PENTING:
+                 * Jangan langsung signOut di sini.
+                 * Kalau Firestore sedang offline/error sementara,
+                 * session Firebase tetap dipertahankan.
+                 */
                 return null;
             }
         }
-
+        
         function canonicalRole(role) {
             const r = String(role || 'User').trim().toLowerCase();
             if (r === 'admin') return 'Admin';
@@ -5140,153 +5177,201 @@ async function logoutFirebase() {
         auth.onAuthStateChanged(async (firebaseUser) => {
 
             const gateScreen =
-                document.getElementById(
-                    'auth-gate-screen'
-                );
+                document.getElementById("auth-gate-screen");
         
-            // ========================================
-            // TIDAK LOGIN
-            // ========================================
-        
+            // =========================================
+            // BELUM LOGIN
+            // =========================================
             if (!firebaseUser) {
+        
                 hentikanListenerFirestore();
+        
                 currentUser = null;
                 currentUserNama = "";
                 currentActiveRole = "";
                 userAksesMenuArray = {};
         
                 if (gateScreen) {
-                    gateScreen.classList.remove('hidden');
+                    gateScreen.classList.remove("hidden");
                 }
         
-                console.log(
-                    "Tidak ada user Firebase yang login."
-                );
+                console.log("[MEDIX] Tidak ada user Firebase yang login.");
         
                 return;
             }
         
-        
-            // ========================================
-            // LOGIN / RESTORE SESSION
-            // ========================================
-        
+            // =========================================
+            // FIREBASE AUTH BERHASIL
+            // =========================================
             console.log(
-                "Firebase user aktif:",
-                firebaseUser.uid
+                "[MEDIX] Firebase user aktif:",
+                firebaseUser.uid,
+                firebaseUser.email
             );
         
             try {
         
                 const userData =
-                    await loadFirebaseUserProfile(
-                        firebaseUser
-                    );
+                    await loadFirebaseUserProfile(firebaseUser);
         
+                // =========================================
+                // PROFIL TIDAK DITEMUKAN
+                // =========================================
                 if (!userData) {
         
-                    await auth.signOut();
+                    console.error(
+                        "[MEDIX] Profil Firestore tidak dapat dimuat."
+                    );
+        
+                    /*
+                     * JANGAN signOut otomatis.
+                     *
+                     * Ini penting agar error Firestore sementara
+                     * tidak membuat user dilempar kembali ke login.
+                     */
+        
+                    if (gateScreen) {
+                        gateScreen.classList.remove("hidden");
+                    }
+        
+                    const loginMessage =
+                        document.getElementById("gate-subtitle");
+        
+                    if (loginMessage) {
+                        loginMessage.innerText =
+                            "Sesi Firebase aktif. Profil pengguna sedang dimuat...";
+                    }
         
                     return;
                 }
         
+                // =========================================
+                // PASTIKAN UID
+                // =========================================
+                userData.uid = firebaseUser.uid;
         
-                userData.uid =
-                    firebaseUser.uid;
+                // =========================================
+                // TERAPKAN USER CONTEXT
+                // =========================================
+                const contextBerhasil =
+                    applyUserContext(userData);
         
+                if (contextBerhasil === false) {
         
-                // ====================================
-                // CONTEXT
-                // ====================================
+                    console.error(
+                        "[MEDIX] applyUserContext gagal."
+                    );
         
-                applyUserContext(
-                    userData
-                );
+                    if (gateScreen) {
+                        gateScreen.classList.remove("hidden");
+                    }
         
+                    return;
+                }
         
                 console.log(
-                    "User context berhasil:",
+                    "[MEDIX] User context berhasil:",
                     currentUser
                 );
         
-        
-                // ====================================
+                // =========================================
                 // SIDEBAR
-                // ====================================
-        
-                renderSidebarByPermission();
-        
-        
-                // ====================================
-                // FIRESTORE LISTENER
-                // ====================================
-        
-                mulaiListenerFirestore();
-        
-        
-                // ====================================
-                // TUTUP LOGIN
-                // ====================================
-        
-                if (gateScreen) {
-                    gateScreen.classList.add(
-                        'hidden'
+                // =========================================
+                try {
+                    renderSidebarByPermission();
+                } catch (error) {
+                    console.error(
+                        "[MEDIX] Error render sidebar:",
+                        error
                     );
                 }
         
-        
-                // ====================================
-                // ROLE BADGE
-                // ====================================
-        
-                const roleBadge =
-                    document.getElementById(
-                        'sidebar-role-badge'
+                // =========================================
+                // FIRESTORE LISTENER
+                // =========================================
+                try {
+                    mulaiListenerFirestore();
+                } catch (error) {
+                    console.error(
+                        "[MEDIX] Error mulai listener Firestore:",
+                        error
                     );
+                }
+        
+                // =========================================
+                // TUTUP LOGIN SCREEN
+                // =========================================
+                if (gateScreen) {
+                    gateScreen.classList.add("hidden");
+                }
+        
+                // =========================================
+                // ROLE BADGE
+                // =========================================
+                const roleBadge =
+                    document.getElementById("sidebar-role-badge");
         
                 if (roleBadge) {
                     roleBadge.innerText =
-                        currentActiveRole;
+                        currentActiveRole || "User";
                 }
         
-        
-                // ====================================
+                // =========================================
                 // NAMA USER
-                // ====================================
-        
+                // =========================================
                 const profilCard =
                     document.querySelector(
-                        '#app-sidebar p.truncate'
+                        "#app-sidebar p.truncate"
                     );
         
                 if (profilCard) {
                     profilCard.innerText =
-                        currentUserNama;
+                        currentUserNama || firebaseUser.email || "User";
                 }
         
+                // =========================================
+                // FOOTER ACCOUNT
+                // =========================================
+                try {
+                    if (typeof medixSyncSidebarFooterAccount === "function") {
+                        medixSyncSidebarFooterAccount();
+                    }
+                } catch (error) {
+                    console.warn(
+                        "[MEDIX] Footer account gagal:",
+                        error
+                    );
+                }
         
                 console.log(
-                    "Session MEDIX siap."
+                    "[MEDIX] Session MEDIX siap:",
+                    currentUserNama,
+                    currentActiveRole
                 );
-        
         
             } catch (error) {
         
                 console.error(
-                    "Gagal memulihkan session Firebase:",
+                    "[MEDIX] Gagal memulihkan session:",
                     error
                 );
         
-                await auth.signOut();
+                /*
+                 * JANGAN signOut.
+                 *
+                 * Firebase Auth sudah berhasil.
+                 * Jangan menghapus session hanya karena
+                 * komponen UI/Firestore lain mengalami error.
+                 */
         
                 if (gateScreen) {
-                    gateScreen.classList.remove(
-                        'hidden'
-                    );
+                    gateScreen.classList.remove("hidden");
                 }
+        
             }
+        
         });
-
+        
         function bukaFormMaintenance(equipmentId) {
 
             const permission =
@@ -10749,26 +10834,217 @@ body { overflow-x: hidden !important; }
     const bar=table.parentElement?.querySelector(':scope > .medix-mobile-filter-bar'); if(!bar)return;
     const n=getState(table).filters.size; const btn=bar.querySelector('button'); if(btn)btn.innerHTML=`<i class="fa-solid fa-filter"></i> Buka Filter${n?' ('+n+')':''}`;
   }
+    
   function decorateTable(table){
-    if(!table.tHead || table.dataset.medixFiltersReady==='1') return;
-    table.dataset.medixFiltersReady='1'; table.classList.add('medix-filterable-table');
-    Array.from(table.tHead.rows[0].cells).forEach((th,i)=>{
-      if(!isFilterableHeader(th.innerText)) return;
-      th.classList.add('medix-filter-th');
-      const b=document.createElement('button'); b.type='button'; b.className='medix-filter-btn'; b.dataset.col=i; b.title='Filter kolom'; b.setAttribute('aria-label','Filter '+norm(th.innerText)); b.innerHTML='<i class="fa-solid fa-filter"></i>';
-      b.addEventListener('click',e=>{e.stopPropagation();openPopup(table,i,b);}); th.appendChild(b);
-    });
-    const host=table.parentElement;
-    if(host && !host.querySelector(':scope > .medix-mobile-filter-bar')){
-      const bar=document.createElement('div'); bar.className='medix-mobile-filter-bar no-print';
-      const options=Array.from(table.tHead.rows[0].cells).map((th,i)=>isFilterableHeader(th.innerText)?`<option value="${i}">${escapeHtml(norm(th.innerText))}</option>`:'').join('');
-      bar.innerHTML=`<select class="medix-mobile-filter-select" aria-label="Pilih kolom filter"><option value="">Pilih kolom...</option>${options}</select><button type="button" class="medix-mobile-filter-btn"><i class="fa-solid fa-filter"></i> Buka Filter</button>`;
-      const sel=bar.querySelector('select');
-      bar.querySelector('button').onclick=()=>{ const col=Number(sel.value); if(Number.isInteger(col) && col>=0){const btn=table.tHead.rows[0].cells[col]?.querySelector('.medix-filter-btn'); if(btn)openPopup(table,col,btn);} };
-      host.insertBefore(bar,table);
+
+        if (!table) return;
+    
+        if (
+            !table.tHead ||
+            !table.tHead.rows ||
+            !table.tHead.rows.length ||
+            !table.tHead.rows[0] ||
+            !table.tHead.rows[0].cells ||
+            !table.tHead.rows[0].cells.length ||
+            table.dataset.medixFiltersReady === "1"
+        ) {
+            return;
+        }
+    
+        const headerRow = table.tHead.rows[0];
+    
+        table.dataset.medixFiltersReady = "1";
+    
+        table.classList.add(
+            "medix-filterable-table"
+        );
+    
+        Array.from(headerRow.cells).forEach((th, i) => {
+    
+            if (!th) return;
+    
+            if (
+                typeof isFilterableHeader === "function" &&
+                !isFilterableHeader(th.innerText)
+            ) {
+                return;
+            }
+    
+            th.classList.add("medix-filter-th");
+    
+            const b =
+                document.createElement("button");
+    
+            b.type = "button";
+    
+            b.className =
+                "medix-filter-btn";
+    
+            b.dataset.col = i;
+    
+            b.title =
+                "Filter kolom";
+    
+            b.setAttribute(
+                "aria-label",
+                "Filter " +
+                (typeof norm === "function"
+                    ? norm(th.innerText)
+                    : th.innerText)
+            );
+    
+            b.innerHTML =
+                '<i class="fa-solid fa-filter"></i>';
+    
+            b.addEventListener(
+                "click",
+                e => {
+    
+                    e.stopPropagation();
+    
+                    if (
+                        typeof openPopup === "function"
+                    ) {
+                        openPopup(
+                            table,
+                            i,
+                            b
+                        );
+                    }
+                }
+            );
+    
+            th.appendChild(b);
+        });
+    
+        const host =
+            table.parentElement;
+    
+        if (
+            host &&
+            !host.querySelector(
+                ":scope > .medix-mobile-filter-bar"
+            )
+        ) {
+    
+            const bar =
+                document.createElement("div");
+    
+            bar.className =
+                "medix-mobile-filter-bar no-print";
+    
+            const options =
+                Array.from(
+                    headerRow.cells
+                )
+                .map((th, i) => {
+    
+                    const filterable =
+                        typeof isFilterableHeader === "function"
+                            ? isFilterableHeader(th.innerText)
+                            : true;
+    
+                    if (!filterable) {
+                        return "";
+                    }
+    
+                    const label =
+                        typeof norm === "function"
+                            ? norm(th.innerText)
+                            : th.innerText;
+    
+                    const escaped =
+                        typeof escapeHtml === "function"
+                            ? escapeHtml(label)
+                            : label;
+    
+                    return `
+                        <option value="${i}">
+                            ${escaped}
+                        </option>
+                    `;
+                })
+                .join("");
+    
+            bar.innerHTML = `
+                <select
+                    class="medix-mobile-filter-select"
+                    aria-label="Pilih kolom filter"
+                >
+                    <option value="">
+                        Pilih kolom...
+                    </option>
+                    ${options}
+                </select>
+    
+                <button
+                    type="button"
+                    class="medix-mobile-filter-btn"
+                >
+                    <i class="fa-solid fa-filter"></i>
+                    Buka Filter
+                </button>
+            `;
+    
+            const sel =
+                bar.querySelector("select");
+    
+            const btn =
+                bar.querySelector("button");
+    
+            if (btn) {
+    
+                btn.onclick = () => {
+    
+                    const col =
+                        Number(sel?.value);
+    
+                    if (
+                        Number.isInteger(col) &&
+                        col >= 0 &&
+                        headerRow.cells[col]
+                    ) {
+    
+                        const filterBtn =
+                            headerRow
+                                .cells[col]
+                                .querySelector(
+                                    ".medix-filter-btn"
+                                );
+    
+                        if (
+                            filterBtn &&
+                            typeof openPopup === "function"
+                        ) {
+                            openPopup(
+                                table,
+                                col,
+                                filterBtn
+                            );
+                        }
+                    }
+                };
+            }
+    
+            host.insertBefore(
+                bar,
+                table
+            );
+        }
+    
+        if (
+            typeof observeBody === "function"
+        ) {
+            observeBody(table);
+        }
+    
+        if (
+            typeof apply === "function"
+        ) {
+            apply(table);
+        }
     }
-    observeBody(table); apply(table);
-  }
+    
   function observeBody(table){
     if(table.dataset.medixObserver==='1') return; table.dataset.medixObserver='1';
     Array.from(table.tBodies||[]).forEach(tb=>new MutationObserver(()=>{clearTimeout(tb._medixTimer);tb._medixTimer=setTimeout(()=>apply(table),0);}).observe(tb,{childList:true}));

@@ -6255,11 +6255,18 @@ function renderMaintenanceHistory() {
 
                 if (containerMasterAction) {
                     const buttons = [];
-                    if (masterExport) buttons.push(`<button onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
-                    if (masterImport) buttons.push(`<label class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import DATABASE.xlsx<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
-                    if (masterTambah) buttons.push(`<button onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
-                    if (masterRead && canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button onclick="cetakLabelBarcodeMassalPdf()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Khusus Admin"><i class="fa-solid fa-qrcode mr-1.5"></i> Download Semua Barcode</button>`);
+                    if (masterExport) buttons.push(`<button type="button" onclick="exportKeExcelMassal()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition"><i class="fa-solid fa-file-excel mr-1.5"></i> Export Excel</button>`);
+
+                    // IMPORT EXCEL KHUSUS ADMIN — tidak lagi bergantung pada izin menu master.import.
+                    // Ini memastikan tombol selalu muncul untuk akun Admin yang sudah login.
+                    if (canonicalRole(currentActiveRole) === 'Admin') {
+                        buttons.push(`<label id="btn-import-excel-master" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition cursor-pointer" title="Import Master Data Aset dari Excel"><i class="fa-solid fa-file-arrow-up mr-1.5"></i> Import DATABASE.xlsx<input type="file" id="file-excel-input" accept=".xlsx,.xls,.csv" onchange="importDataDariExcel(event)" class="hidden"></label>`);
+                    }
+
+                    if (masterTambah) buttons.push(`<button type="button" onclick="openModalAlatManual()" class="bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-4 py-1.5 rounded-xl text-xs font-semibold hover:from-blue-700 transition shadow"><i class="fa-solid fa-plus mr-1"></i> Tambah Manual</button>`);
+                    if (masterRead && canonicalRole(currentActiveRole) === 'Admin') buttons.push(`<button type="button" onclick="cetakLabelBarcodeMassalPdf()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center shadow transition" title="Khusus Admin"><i class="fa-solid fa-qrcode mr-1.5"></i> Download Semua Barcode</button>`);
                     containerMasterAction.innerHTML = buttons.join('');
+                    containerMasterAction.style.display = buttons.length ? 'flex' : '';
                 }
 
                 const btnUploadPdf = document.getElementById('btn-upload-pdf-baru');
@@ -9018,148 +9025,177 @@ function renderMaintenanceHistory() {
             const input = event?.target;
             const file = input?.files?.[0];
             if (!file) return;
-            if (canonicalRole(currentActiveRole) !== 'Admin') {
+
+            const role = canonicalRole(currentActiveRole);
+            if (role !== 'Admin') {
                 showToast('Hanya Admin yang dapat mengimpor Master Data Aset.', 'error');
                 if (input) input.value = '';
                 return;
             }
             if (typeof XLSX === 'undefined') {
-                showToast('Library Excel belum tersedia.', 'error');
+                showToast('Library Excel belum tersedia. Muat ulang halaman lalu coba lagi.', 'error');
+                if (input) input.value = '';
                 return;
             }
 
-            try {
-                showToast('Membaca DATABASE.xlsx...', 'info');
-                const buffer = await file.arrayBuffer();
-                const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, raw: false });
-                const sheetNames = workbook.SheetNames || [];
-                if (!sheetNames.length) throw new Error('Workbook Excel tidak memiliki sheet.');
+            const norm = value => String(value ?? '')
+                .replace(/\u00a0/g, ' ')
+                .trim()
+                .toLowerCase()
+                .replace(/[\s_\-\/]+/g, ' ');
 
-                // DATABASE.xlsx yang dipakai MEDIX memiliki data utama pada sheet BIG DATA,
-                // header di baris 6, dan data mulai baris 7. Jangan memakai sheet pertama
-                // karena sheet pertama dapat berupa Sheet1/DASHBOARD pada file lain.
-                const norm = value => String(value ?? '')
-                    .replace(/\u00a0/g, ' ')
-                    .replace(/[\r\n]+/g, ' ')
-                    .trim()
-                    .toLowerCase()
-                    .replace(/[\s_\-\/]+/g, ' ');
-                // Pilih sheet secara otomatis:
-                // 1) BIG DATA, jika ada;
-                // 2) sheet lain yang benar-benar memiliki header Kode Alat + Nama Alkes.
-                // Ini membuat importer kompatibel dengan DATABASE.xlsx versi lama
-                // maupun file sederhana seperti Lembar1 dengan header di baris 1.
-                const candidateSheetNames = [
+            const clean = value => {
+                if (value === null || value === undefined) return '';
+                return String(value).replace(/\u00a0/g, ' ').trim();
+            };
+
+            const isBlankRow = row => row.every(v => clean(v) === '');
+
+            const findColumn = (headers, candidates) => {
+                const normalized = headers.map(norm);
+                for (const candidate of candidates) {
+                    const wanted = norm(candidate);
+                    let idx = normalized.findIndex(h => h === wanted);
+                    if (idx >= 0) return idx;
+                    idx = normalized.findIndex(h => h.includes(wanted));
+                    if (idx >= 0) return idx;
+                }
+                return -1;
+            };
+
+            const getCell = (row, index) => index >= 0 ? clean(row[index]) : '';
+
+            try {
+                showToast('Membaca file Excel...', 'info');
+                const buffer = await file.arrayBuffer();
+                const workbook = XLSX.read(buffer, {
+                    type: 'array',
+                    cellDates: true,
+                    raw: false,
+                    cellText: true
+                });
+
+                const sheetNames = workbook.SheetNames || [];
+                if (!sheetNames.length) throw new Error('Workbook tidak memiliki sheet.');
+
+                // Cari sheet data secara fleksibel:
+                // 1) BIG DATA jika ada; 2) sheet lain seperti Lembar1/Sheet1.
+                // Header boleh berada di baris 1 sampai 30.
+                const candidates = [
                     ...sheetNames.filter(n => norm(n) === 'big data'),
                     ...sheetNames.filter(n => /big\s*data/i.test(String(n))),
                     ...sheetNames.filter(n => !/big\s*data/i.test(String(n)))
-                ].filter((n, i, arr) => arr.indexOf(n) === i);
+                ].filter((n, i, a) => a.indexOf(n) === i);
 
-                let sheetName = '';
-                let sheet = null;
+                let selectedSheetName = '';
                 let matrix = null;
-                let headerIndex = -1;
+                let headerRowIndex = -1;
+                let headerIndexes = null;
 
-                for (const candidate of candidateSheetNames) {
-                    const candidateSheet = workbook.Sheets[candidate];
-                    const candidateMatrix = XLSX.utils.sheet_to_json(candidateSheet, { header: 1, defval: '', raw: false });
+                for (const sheetName of candidates) {
+                    const ws = workbook.Sheets[sheetName];
+                    if (!ws) continue;
+                    const candidateMatrix = XLSX.utils.sheet_to_json(ws, {
+                        header: 1,
+                        defval: '',
+                        raw: false,
+                        blankrows: false
+                    });
                     if (!candidateMatrix.length) continue;
 
-                    for (let i = 0; i < Math.min(30, candidateMatrix.length); i++) {
-                        const headers = candidateMatrix[i].map(norm);
-                        const hasKode = headers.some(h => h === 'kode alat' || h.includes('kode alat'));
-                        const hasNama = headers.some(h =>
-                            h === 'nama alkes' ||
-                            h === 'nama alat' ||
-                            h.includes('nama alkes') ||
-                            h.includes('nama alat kesehatan')
-                        );
-                        if (hasKode && hasNama) {
-                            sheetName = candidate;
-                            sheet = candidateSheet;
+                    for (let r = 0; r < Math.min(30, candidateMatrix.length); r++) {
+                        const row = candidateMatrix[r] || [];
+                        const headers = row.map(clean);
+                        const kodeIdx = findColumn(headers, ['Kode Alat', 'Kode Aset', 'Kode']);
+                        const namaIdx = findColumn(headers, ['Nama Alkes', 'Nama Alat Kesehatan', 'Nama Alat', 'Nama']);
+                        if (kodeIdx >= 0 && namaIdx >= 0) {
+                            selectedSheetName = sheetName;
                             matrix = candidateMatrix;
-                            headerIndex = i;
+                            headerRowIndex = r;
+                            headerIndexes = { kode: kodeIdx, nama: namaIdx };
                             break;
                         }
                     }
-                    if (sheetName) break;
+                    if (selectedSheetName) break;
                 }
 
-                if (!sheetName || !matrix || headerIndex < 0) {
+                if (!selectedSheetName || !matrix || headerRowIndex < 0) {
                     throw new Error(
-                        `Tidak ditemukan sheet data aset yang valid. ` +
-                        `Workbook memiliki sheet: ${sheetNames.join(', ')}. ` +
-                        `Importer membutuhkan kolom "Kode Alat" dan "Nama Alkes/Nama Alat".`
+                        `Struktur Excel tidak dikenali. Sheet tersedia: ${sheetNames.join(', ')}. ` +
+                        `Importer membutuhkan kolom Kode Alat dan Nama Alkes/Nama Alat.`
                     );
                 }
 
-                const headers = matrix[headerIndex].map((h, i) => String(h ?? '').trim() || `Kolom ${i + 1}`);
-                const rows = matrix.slice(headerIndex + 1)
-                    .map((values, idx) => {
-                        const row = {};
-                        headers.forEach((header, col) => { row[header] = values[col] ?? ''; });
-                        row.__excelRow = headerIndex + idx + 2;
-                        return row;
-                    })
-                    .filter(row => Object.values(row).some(v => String(v ?? '').trim() !== ''));
-
-                const pick = (row, names) => {
-                    const entries = Object.entries(row);
-                    for (const wanted of names) {
-                        const wn = norm(wanted);
-                        const found = entries.find(([k]) => {
-                            const nk = norm(k);
-                            return nk === wn || nk.includes(wn);
-                        });
-                        if (found && String(found[1] ?? '').trim() !== '') return String(found[1]).trim();
-                    }
-                    return '';
-                };
-                const numberOrNull = value => {
-                    const text = String(value ?? '').trim().replace(',', '.');
-                    if (!text) return null;
-                    const n = Number(text.replace(/[^0-9.\-]/g, ''));
-                    return Number.isFinite(n) ? n : null;
-                };
-                const sourceObject = row => {
-                    const out = {};
-                    Object.entries(row).forEach(([k, v]) => {
-                        if (k !== '__excelRow') out[k] = v;
-                    });
-                    return out;
+                const headers = matrix[headerRowIndex].map(clean);
+                const col = {
+                    kode: findColumn(headers, ['Kode Alat', 'Kode Aset', 'Kode']),
+                    nama: findColumn(headers, ['Nama Alkes', 'Nama Alat Kesehatan', 'Nama Alat', 'Nama']),
+                    merk: findColumn(headers, ['Merk', 'Brand']),
+                    tipe: findColumn(headers, ['Tipe', 'Model/Tipe', 'Model', 'Type']),
+                    seri: findColumn(headers, ['No Seri', 'Nomor Seri', 'Serial Number', 'Serial No', 'Seri', 'SN']),
+                    izinEdar: findColumn(headers, ['No Izin Edar', 'Nomor Izin Edar', 'Izin Edar', 'Izin']),
+                    ruangan: findColumn(headers, ['Ruangan', 'Unit/Ruangan', 'Unit', 'Lokasi']),
+                    status: findColumn(headers, ['Status Operasional', 'Status']),
+                    edar: findColumn(headers, ['Edar', 'Instalasi', 'Instalasi/Unit']),
+                    fungsi: findColumn(headers, ['Fungsi EM', 'EM Fungsi', 'Fungsi']),
+                    risiko: findColumn(headers, ['Risiko EM', 'EM Risiko', 'Risiko']),
+                    perawatan: findColumn(headers, ['Perawatan EM', 'EM Perawatan', 'Perawatan']),
+                    insiden: findColumn(headers, ['Insiden EM', 'EM Insiden', 'Insiden']),
+                    tanggalPM: findColumn(headers, ['Tanggal Acuan PM', 'Tanggal PM Terakhir', 'Tanggal PM'])
                 };
 
+                if (col.kode < 0 || col.nama < 0) {
+                    throw new Error('Kolom Kode Alat dan Nama Alkes/Nama Alat wajib tersedia.');
+                }
+
+                // Index aset lama berdasarkan kode, serial, dan kombinasi data utama.
                 const existingByCode = new Map();
                 const existingBySerial = new Map();
-                (Array.isArray(dataAlat) ? dataAlat : []).forEach(a => {
-                    const code = String(a.kode || '').trim();
-                    const id = String(a.id || '').trim();
-                    if (code) existingByCode.set(norm(code), a);
-                    if (id && !existingByCode.has(norm(id))) existingByCode.set(norm(id), a);
-                    const serial = String(a.seri || a.serialNumber || '').trim();
-                    if (serial && serial !== '-') existingBySerial.set(norm(serial), a);
+                const existingByFull = new Map();
+                dataAlat.forEach(a => {
+                    const code = norm(a.kode || a.id || '');
+                    const serial = norm(a.seri || a.serialNumber || '');
+                    const full = [a.nama, a.merk, a.tipe, a.ruangan || a.lokasi].map(norm).join('|');
+                    if (code) existingByCode.set(code, a);
+                    if (serial) existingBySerial.set(serial, a);
+                    if (full.replace(/\|/g, '')) existingByFull.set(full, a);
                 });
 
-                const parsed = [];
+                const operations = [];
                 let skipped = 0;
-                const skipReasons = {};
-                rows.forEach(row => {
-                    const kode = pick(row, ['Kode Alat', 'Kode Alkes', 'Kode']);
-                    const nama = pick(row, ['Nama Alkes', 'Nama Alat Kesehatan', 'Nama Alat', 'Nama']);
+                const duplicateCodes = new Set();
+
+                for (let r = headerRowIndex + 1; r < matrix.length; r++) {
+                    const row = matrix[r] || [];
+                    if (isBlankRow(row)) continue;
+
+                    const kode = getCell(row, col.kode);
+                    const nama = getCell(row, col.nama);
                     if (!kode || !nama) {
                         skipped++;
-                        const reason = !kode && !nama ? 'Kode Alat + Nama Alkes kosong' : (!kode ? 'Kode Alat kosong' : 'Nama Alkes kosong');
-                        skipReasons[reason] = (skipReasons[reason] || 0) + 1;
-                        return;
+                        continue;
                     }
 
-                    const merk = pick(row, ['Merk', 'Merek', 'Brand']);
-                    const tipe = pick(row, ['Tipe', 'Model/Tipe', 'Model', 'Type']);
-                    const seri = pick(row, ['No Seri', 'Nomor Seri', 'Serial Number', 'Serial No', 'S/N', 'SN']);
-                    const izinEdar = pick(row, ['No Izin Edar', 'Nomor Izin Edar', 'Izin Edar', 'No. Izin Edar']);
-                    const ruangan = pick(row, ['Ruangan', 'Unit/Ruangan', 'Unit', 'Lokasi']);
-                    const status = pick(row, ['Status Operasional', 'Status']) || 'Siap Digunakan';
-                    const kondisi = pick(row, ['Kondisi Produk', 'Kondisi']);
+                    const merk = getCell(row, col.merk);
+                    const tipe = getCell(row, col.tipe);
+                    const seri = getCell(row, col.seri);
+                    const izinEdar = getCell(row, col.izinEdar);
+                    const ruangan = getCell(row, col.ruangan);
+                    const edar = getCell(row, col.edar);
+                    const status = getCell(row, col.status) || 'Siap Digunakan';
+                    const tanggalPM = getCell(row, col.tanggalPM);
+
+                    const toNumberOrNull = value => {
+                        if (value === '') return null;
+                        const n = Number(String(value).replace(',', '.'));
+                        return Number.isFinite(n) ? n : null;
+                    };
+
+                    const sourceExcel = {};
+                    headers.forEach((h, i) => {
+                        const key = clean(h);
+                        if (key) sourceExcel[key] = clean(row[i]);
+                    });
 
                     const payload = {
                         id: kode,
@@ -9170,90 +9206,79 @@ function renderMaintenanceHistory() {
                         seri,
                         izinEdar,
                         ruangan,
+                        // edar dipertahankan jika kolom tersebut ada; jangan mengubah data lama jika kosong.
+                        ...(edar ? { edar } : {}),
                         status,
-                        ...(kondisi ? { kondisi } : {}),
-                        bulanMasuk: pick(row, ['Bulan masuk', 'Bulan Masuk']),
-                        tahunAnggaran: pick(row, ['Tahun Anggaran']),
-                        kategoriResiko: pick(row, ['KATEGORI RESIKO', 'Kategori Risiko', 'Kategori Resiko']),
-                        distributor: pick(row, ['DISTRIBUTOR / PRODUSEN', 'Distributor/Produsen', 'Distributor', 'Produsen']),
-                        sumberPendanaan: pick(row, ['Sumber Pendanaan']),
-                        hargaPerolehan: pick(row, ['Harga Perolehan']),
-                        namaMarketing: pick(row, ['Nama Marketing']),
-                        kontakMarketing: pick(row, ['Kontak']),
-                        namaTeknisi: pick(row, ['Nama Teknisi']),
-                        kewajibanKalibrasi: pick(row, ['Kewajiban Kalibrasi']),
-                        klasifikasiTeknologi: pick(row, ['Klasifikasi Alkes (Teknologi)', 'Klasifikasi Alkes Teknologi']),
-                        klasifikasiJenis: pick(row, ['Klasifikasi Alkes (Jenis)', 'Klasifikasi Alkes Jenis']),
-                        klasifikasiKategori: pick(row, ['Klasifikasi Alkes (Kategori)', 'Klasifikasi Alkes Kategori']),
-                        klasifikasiNamaRekening: pick(row, ['Klasifikasi Alkes (Nama Rekening)', 'Klasifikasi Nama Rekening']),
-                        usiaPakaiTahun: numberOrNull(pick(row, ['USIA PAKAI (TAHUN)', 'Usia Pakai (Tahun)'])),
-                        usiaTeknisTahun: numberOrNull(pick(row, ['USIA TEKNIS (TAHUN)', 'Usia Teknis (Tahun)'])),
-                        sourceExcel: sourceObject(row),
-                        importSource: `DATABASE.xlsx / ${sheetName}`,
-                        importExcelRow: row.__excelRow,
+                        emFungsi: toNumberOrNull(getCell(row, col.fungsi)),
+                        emRisiko: toNumberOrNull(getCell(row, col.risiko)),
+                        emPerawatan: toNumberOrNull(getCell(row, col.perawatan)),
+                        emInsiden: toNumberOrNull(getCell(row, col.insiden)),
+                        tanggalAcuanPM: tanggalPM,
+                        importSource: file.name,
+                        importExcelSheet: selectedSheetName,
+                        importExcelRow: r + 1,
+                        sourceExcel,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     };
-                    parsed.push({ kode, nama, seri, payload, rowNumber: row.__excelRow });
-                });
 
-                if (!parsed.length) {
-                    throw new Error(`Tidak ada data aset valid. Sheet "${sheetName}" harus memiliki kolom Kode Alat dan Nama Alkes.`);
-                }
+                    const codeKey = norm(kode);
+                    if (duplicateCodes.has(codeKey)) {
+                        skipped++;
+                        continue;
+                    }
+                    duplicateCodes.add(codeKey);
 
-                const preview = parsed.slice(0, 5).map(x => `${x.kode} — ${x.nama}`).join('\n');
-                const duplicateCodeCount = parsed.length - new Set(parsed.map(x => norm(x.kode))).size;
-                const duplicateNote = duplicateCodeCount ? `\nDuplikat Kode Alat di file: ${duplicateCodeCount}. Hanya baris pertama yang diproses.` : '';
-                const confirmMessage = `Sheet: ${sheetName}\nHeader: baris ${headerIndex + 1}\nData valid: ${parsed.length}\nDilewati: ${skipped}${duplicateNote}\n\nContoh:\n${preview}\n\nLanjutkan import ke Master Data Aset?`;
+                    // Prioritas pencocokan: kode -> serial -> kombinasi data utama.
+                    const existing = existingByCode.get(codeKey) ||
+                        (norm(seri) && existingBySerial.get(norm(seri))) ||
+                        existingByFull.get([nama, merk, tipe, ruangan].map(norm).join('|'));
 
-                const confirmed = typeof showConfirmDialog === 'function'
-                    ? await showConfirmDialog(confirmMessage, { title: 'Konfirmasi Import DATABASE.xlsx', okText: 'Ya, Import', cancelText: 'Batal', variant: 'safe', icon: 'fa-file-import' })
-                    : window.confirm(confirmMessage);
-                if (!confirmed) {
-                    showToast('Import dibatalkan.', 'info');
-                    return;
-                }
-
-                // Kode Alat menjadi ID dokumen. Untuk kode yang mengandung '/',
-                // gunakan encoding agar tidak memecah path Firestore; nilai kode asli tetap disimpan.
-                const operations = [];
-                const seenCodes = new Set();
-                parsed.forEach(item => {
-                    const codeKey = norm(item.kode);
-                    if (seenCodes.has(codeKey)) return;
-                    seenCodes.add(codeKey);
-
-                    const existing = existingByCode.get(codeKey) || (item.seri ? existingBySerial.get(norm(item.seri)) : null);
-                    const safeDocId = item.kode.replace(/\//g, '%2F').trim();
+                    // Gunakan kode Excel sebagai document ID agar import berikutnya menjadi update,
+                    // bukan membuat duplikat baru.
+                    const safeDocId = kode.replace(/[\\/]/g, '%2F').trim();
                     const ref = existing
                         ? db.collection('dataAlat').doc(existing.id)
-                        : db.collection('dataAlat').doc(safeDocId || undefined);
-                    const finalPayload = { ...item.payload };
-                    if (!existing) finalPayload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
-                    operations.push({ ref, payload: finalPayload });
-                });
+                        : db.collection('dataAlat').doc(safeDocId);
 
-                if (!operations.length) throw new Error('Tidak ada operasi import yang dapat diproses.');
-                showToast(`Menulis ${operations.length} aset ke Firestore...`, 'info');
-                for (let i = 0; i < operations.length; i += 450) {
-                    const batch = db.batch();
-                    operations.slice(i, i + 450).forEach(op => batch.set(op.ref, op.payload, { merge: true }));
-                    await batch.commit();
-                    showToast(`Import: ${Math.min(i + 450, operations.length)} / ${operations.length} aset...`, 'info');
+                    operations.push({ ref, payload, mode: existing ? 'update' : 'add' });
                 }
 
-                const summary = `Import DATABASE.xlsx selesai. ${operations.length} aset diproses${skipped ? `, ${skipped} baris dilewati` : ''}.`;
-                showToast(summary, 'success');
-                console.info('[MEDIX] Import DATABASE.xlsx selesai:', {
-                    sheet: sheetName,
-                    headerRow: headerIndex + 1,
-                    valid: parsed.length,
-                    processed: operations.length,
-                    skipped,
-                    skipReasons
+                if (!operations.length) {
+                    throw new Error(`Tidak ada data aset valid. Sheet: ${selectedSheetName}, header: baris ${headerRowIndex + 1}.`);
+                }
+
+                const total = operations.length;
+                showToast(`Ditemukan ${total} aset dari ${selectedSheetName}. Menyimpan ke Firestore...`, 'info');
+
+                // Firestore maksimal 500 operasi/batch; gunakan 400 agar aman.
+                for (let i = 0; i < operations.length; i += 400) {
+                    const chunk = operations.slice(i, i + 400);
+                    const batch = db.batch();
+                    chunk.forEach(op => batch.set(op.ref, op.payload, { merge: true }));
+                    await batch.commit();
+                    console.log(`[MEDIX] Import Firestore: ${Math.min(i + chunk.length, total)}/${total}`);
+                }
+
+                showToast(
+                    `Import berhasil: ${total} aset diproses dari sheet ${selectedSheetName}` +
+                    (skipped ? `, ${skipped} baris dilewati.` : '.'),
+                    'success'
+                );
+                console.log('[MEDIX] Import Excel selesai', {
+                    file: file.name,
+                    sheet: selectedSheetName,
+                    headerRow: headerRowIndex + 1,
+                    total,
+                    skipped
                 });
             } catch (error) {
-                console.error('Import DATABASE.xlsx gagal:', error);
-                showToast('Import DATABASE.xlsx gagal: ' + (error.message || 'format file tidak valid.'), 'error');
+                console.error('[MEDIX] Import Excel gagal:', error);
+                let message = error?.message || 'Format file tidak valid.';
+                if (error?.code === 'permission-denied' || /insufficient permissions|permission/i.test(message)) {
+                    message = 'Firestore menolak penulisan dataAlat. Periksa Firestore Rules untuk koleksi dataAlat dan pastikan akun Admin aktif.';
+                }
+                showToast('Import gagal: ' + message, 'error');
+                alert('IMPORT EXCEL GAGAL\n\n' + message + '\n\nLihat F12 > Console untuk detail teknis.');
             } finally {
                 if (input) input.value = '';
             }
